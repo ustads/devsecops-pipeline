@@ -182,15 +182,119 @@ Ganti `<YOUR_PROJECT_KEY>` di Jenkinsfile dengan project key Anda:
 
 ## 💡 Fitur Unggulan Sistem
 
-✅ **Auto-Mitigation Terotomatisasi**: Menggunakan parameter `close_old_findings=true` pada DefectDojo API, sehingga temuan lama yang sudah diperbaiki oleh developer pada commit terbaru akan otomatis ditutup secara sistematis.
+### ✅ Auto-Mitigation Terotomatisasi
+Menggunakan parameter `close_old_findings=true` pada DefectDojo API, sehingga temuan lama yang sudah diperbaiki oleh developer pada commit terbaru akan otomatis ditutup secara sistematis.
 
-✅ **Keamanan Enkapsulasi Shell**: Menggunakan taktik backslash escaping (`\$TOKEN`) pada Jenkins script untuk menghindari celah keamanan Groovy string interpolation sekaligus menjaga integrasi variabel lokal tetap terbaca sempurna.
+**Implementasi:**
+```groovy
+// Contoh di Jenkinsfile
+sh "curl -X POST '${DEFECTDOJO_URL}/api/v2/import-scan/' \
+    -H 'Authorization: Token \${DOJO_TOKEN}' \
+    -F 'scan_date=\$(date +%Y-%m-%d)' \
+    -F 'scan_type=SonarQube Scan' \
+    -F 'engagement=${ENGAGEMENT_ID}' \
+    -F 'file=@sonarqube-report.json' \
+    -F 'close_old_findings=true'"
+```
 
-✅ **Penyimpanan Laporan Fisik**: Memaksa perkakas berbasis CLI untuk mengekspor dokumen data fisik mentah (JSON/XML) agar validasi artefak kepatuhan (compliance audit) dapat dilakukan kapan saja.
+**Benefit:**
+- 🔄 Otomatis menutup findings yang sudah di-remediate
+- 📊 Mengurangi false positives di dashboard
+- ⚡ Efisiensi tracking status vulnerability
 
-✅ **Multi-Scanner Integration**: Terintegrasi dengan 5 lapisan pemindaian keamanan berbeda dalam satu pipeline untuk coverage keamanan maksimal.
+---
 
-✅ **Fail-Fast Mechanism**: Pipeline akan berhenti otomatis jika ada kritical vulnerability di tahap awal, mencegah deployment kode tidak aman.
+### ✅ Keamanan Enkapsulasi Shell
+Menggunakan taktik backslash escaping (`\$TOKEN`) pada Jenkins script untuk menghindari celah keamanan Groovy string interpolation sekaligus menjaga integrasi variabel lokal tetap terbaca sempurna.
+
+**Implementasi:**
+```groovy
+// ✅ AMAN - Menggunakan backslash escaping
+withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+    sh "curl -s -u \$SONAR_TOKEN: \"${SONARQUBE_URL}/api/issues/search\""
+}
+
+// ❌ TIDAK AMAN - String interpolation langsung
+sh "curl -s -u ${SONAR_TOKEN}: \"${SONARQUBE_URL}/api/issues/search\""
+```
+
+**Benefit:**
+- 🔐 Mencegah credential leakage di logs
+- 🛡️ Menghindari Groovy injection attacks
+- 📝 Variabel tetap terbaca dan functional
+- 🔒 Secret tokens tidak terekspos saat script debugging
+
+---
+
+### ✅ Penyimpanan Laporan Fisik
+Memaksa perkakas berbasis CLI untuk mengekspor dokumen data fisik mentah (JSON/XML) agar validasi artefak kepatuhan (compliance audit) dapat dilakukan kapan saja.
+
+**Implementasi:**
+```groovy
+// TruffleHog
+sh "trufflehog filesystem ${WORKSPACE} --fail"
+
+// Checkov
+sh "docker run --rm ... bridgecrew/checkov -d ${WORKSPACE} --output json > checkov-report.json"
+
+// SonarQube
+sh "curl -s ... > sonarqube-report.json"
+
+// Dependency-Check
+dependencyCheck(
+    odcInstallation: 'DP-Check', 
+    additionalArguments: "--format HTML --format XML --out ."
+)
+
+// Trivy
+sh "docker run --rm aquasec/trivy:${TRIVY_VERSION} fs --format json -o trivy-report.json"
+```
+
+**Benefit:**
+- 📄 Laporan tersimpan untuk audit trail
+- ✅ Compliance documentation yang lengkap
+- 🔍 Dapat diverifikasi secara manual atau otomatis
+- 💾 Archival untuk historical tracking
+- 📋 Multi-format reporting (JSON, XML, HTML)
+
+---
+
+### ✅ Multi-Scanner Integration
+Terintegrasi dengan 5 lapisan pemindaian keamanan berbeda dalam satu pipeline untuk coverage keamanan maksimal.
+
+**Coverage:**
+- 🔐 **Secret Scanning** → TruffleHog (Hardcoded credentials)
+- 🏗️ **IaC Security** → Checkov (Infrastructure misconfigurations)
+- 🔎 **SAST** → SonarQube (Code vulnerabilities)
+- 📦 **SCA** → Dependency-Check (Third-party CVEs)
+- 🖥️ **Filesystem Scanning** → Trivy (Container vulnerabilities)
+
+**Benefit:**
+- 🎯 Comprehensive security validation
+- 🚀 Shift-left security approach
+- 🔁 Automated fail-fast mechanism
+- 📊 Centralized reporting di DefectDojo
+
+---
+
+### ✅ Fail-Fast Mechanism
+Pipeline akan berhenti otomatis jika ada kritical vulnerability di tahap awal, mencegah deployment kode tidak aman.
+
+**Implementasi:**
+```groovy
+stage('2. Secret Scanning (TruffleHog)') {
+    steps {
+        sh "trufflehog filesystem ${WORKSPACE} --fail"  // --fail akan exit code 1 jika ada secret
+    }
+}
+```
+
+**Benefit:**
+- ⛔ Immediate halt pada security issues
+- 💰 Menghemat resources CI/CD
+- 🚫 Prevent unsafe code deployment
+- 📞 Fast notification ke development team
+- ⚡ Reduce remediation time
 
 ---
 
