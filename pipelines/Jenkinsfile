@@ -1,0 +1,110 @@
+// Isi Jenkinsfile lengkap yang sudah teroptimasi
+pipeline {
+    agent any
+
+    environment {
+        SONARQUBE_URL   = 'http://<IP_GATEWAY_DOCKER>:<PORT_SONARQUBE>' 
+        TRIVY_VERSION   = '0.52.2'
+        DEFECTDOJO_URL  = 'http://<IP_GATEWAY_DOCKER>:<PORT_DEFECTDOJO>' 
+        ENGAGEMENT_ID   = '<YOUR_ENGAGEMENT_ID>' 
+    }
+
+    stages {
+        stage('1. Checkout Code') {
+            steps { 
+                checkout scm 
+            }
+        }
+
+        stage('2. Secret Scanning (TruffleHog)') {
+            steps {
+                script {
+                    echo "Running TruffleHog..."
+                    sh '''
+                        if ! command -v trufflehog &>/dev/null; then
+                            curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+                        fi
+                        trufflehog filesystem "${WORKSPACE}" --fail
+                    '''
+                }
+            }
+        }
+
+        stage('3. IaC Scanning (Checkov)') {
+            steps {
+                script {
+                    echo "Running Checkov..."
+                    sh "docker run --rm --volumes-from jenkins_sec_master bridgecrew/checkov -d ${WORKSPACE} --output json > checkov-report.json"
+                }
+            }
+        }
+
+        stage('4. SAST (SonarQube)') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarQubeScanner'
+                    withSonarQubeEnv('SonarQube') {
+                        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+                            sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=<YOUR_PROJECT_KEY> -Dsonar.login=\$SONAR_TOKEN"
+                            echo "Extracting SonarQube Issues..."
+                            sh "curl -s -u \$SONAR_TOKEN: \"${SONARQUBE_URL}/api/issues/search?componentKeys=<YOUR_PROJECT_KEY>&resolved=false\" > sonarqube-report.json"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('5. SCA (OWASP Dependency-Check)') {
+            steps {
+                echo 'Running OWASP Dependency-Check...'
+                withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_API_KEY')]) {
+                    dependencyCheck(
+                        odcInstallation: 'DP-Check', 
+                        additionalArguments: "--scan ./ --format HTML --format XML --out . --nvdApiDelay 4000"
+                    )
+                }
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+
+        stage('6. Vulnerability Scanning (Trivy)') {
+            steps {
+                script {
+                    echo 'Running Trivy filesystem scan...'
+                    sh "docker run --rm --volumes-from jenkins_sec_master aquasec/trivy:${TRIVY_VERSION} fs --format json -o /var/jenkins_home/workspace/devsecops/trivy-report.json /var/jenkins_home/workspace/devsecops"
+                }
+            }
+        }
+
+        stage('7. Centralization (Push to DefectDojo)') {
+            steps {
+                script {
+                    echo 'Uploading all security artifacts to DefectDojo...'
+                    withCredentials([string(credentialsId: 'defectdojo-api-token', variable: 'DOJO_TOKEN')]) {
+                        
+                        // Upload Checkov
+                        sh "curl -X POST '${DEFECTDOJO_URL}/api/v2/import-scan/' -H 'Authorization: Token \${DOJO_TOKEN}' -F 'scan_date=\$(date +%Y-%m-%d)' -F 'scan_type=Checkov Scan' -F 'engagement=${ENGAGEMENT_ID}' -F 'file=@checkov-report.json' -F 'close_old_findings=true'"
+
+                        // Upload SonarQube
+                        sh "curl -X POST '${DEFECTDOJO_URL}/api/v2/import-scan/' -H 'Authorization: Token \${DOJO_TOKEN}' -F 'scan_date=\$(date +%Y-%m-%d)' -F 'scan_type=SonarQube Scan' -F 'engagement=${ENGAGEMENT_ID}' -F 'file=@sonarqube-report.json' -F 'close_old_findings=true'"
+
+                        // Upload Dependency-Check
+                        sh "curl -X POST '${DEFECTDOJO_URL}/api/v2/import-scan/' -H 'Authorization: Token \${DOJO_TOKEN}' -F 'scan_date=\$(date +%Y-%m-%d)' -F 'scan_type=Dependency Check Scan' -F 'engagement=${ENGAGEMENT_ID}' -F 'file=@dependency-check-report.xml' -F 'close_old_findings=true'"
+
+                        // Upload Trivy
+                        sh "curl -X POST '${DEFECTDOJO_URL}/api/v2/import-scan/' -H 'Authorization: Token \${DOJO_TOKEN}' -F 'scan_date=\$(date +%Y-%m-%d)' -F 'scan_type=Trivy Scan' -F 'engagement=${ENGAGEMENT_ID}' -F 'file=@trivy-report.json' -F 'close_old_findings=true'"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always { 
+            cleanWs() 
+        }
+        failure { 
+            echo "Pipeline Gagal! Periksa tahapan yang terhenti." 
+        }
+    }
+}
